@@ -566,6 +566,64 @@ async function startServer() {
       }
     })
 
+    // AUTOMATIC EVENT REMINDERS
+    async function sendAutomaticReminders() {
+      try {
+        const now = new Date()
+        const next24Hours = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+
+        const events = await db.collection('events').find().toArray()
+
+        for (const event of events) {
+          const eventTime = new Date(`${event.date}T${event.time || '18:00'}:00`)
+
+          if (eventTime <= now || eventTime > next24Hours) continue
+
+          const bookings = await db.collection('bookings').find({
+            eventId: event._id.toString(),
+            reminderSentAt: { $exists: false },
+          }).toArray()
+
+          for (const booking of bookings) {
+            if (!ObjectId.isValid(booking.userId)) continue
+
+            const user = await db.collection('users').findOne({
+              _id: new ObjectId(booking.userId),
+            })
+
+            if (!user?.email) continue
+
+            try {
+              const result = await sendEmail({
+                to: user.email,
+                subject: `Reminder: ${event.title}`,
+                text: `Reminder: You booked ${event.title} on ${event.date} at ${event.time || '18:00'} at ${event.location}. We look forward to seeing you.`,
+                html: `<h2>Event reminder</h2><p>Hello ${user.name || 'there'},</p><p>This is an automatic reminder for your booking:</p><p><strong>${event.title}</strong><br>Date: ${event.date}<br>Time: ${event.time || '18:00'}<br>Location: ${event.location}</p>`,
+              })
+
+              if (result.sent) {
+                await db.collection('bookings').updateOne(
+                  { _id: booking._id },
+                  { $set: { reminderSentAt: new Date() } }
+                )
+
+                console.log(`Automatic reminder sent to ${user.email} for ${event.title}`)
+              }
+            } catch (emailError) {
+              console.error('Automatic reminder email failed:', emailError.message)
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Automatic reminder check failed:', error)
+      }
+    }
+
+    // Check immediately when the backend starts,
+    // then check again once every minute.
+    sendAutomaticReminders()
+    setInterval(sendAutomaticReminders, 60 * 1000)
+
     // PRODUCTION FRONTEND
     const distPath = path.join(__dirname, '..', 'dist')
     if (fs.existsSync(distPath)) {
